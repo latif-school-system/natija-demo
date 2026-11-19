@@ -3165,7 +3165,10 @@ table.marks th { background: #f4f4f4; }
       return '<a class="tile" href="#demo-' + n + '" data-go="' + n + '">' +
         '<div class="t-ic">' + views[n].icon + '</div><div class="t-lbl">' + esc(views[n].label) + '</div></a>';
     }).join('');
-    sec.innerHTML = headerHTML('ڈیش بورڈ — ' + demo.settings.schoolName, 'نمونہ ڈیٹا کے ساتھ لائیو ڈیمو') +
+    var hint = students.length ? '' :
+      '<div class="panel"><p class="note">ڈیمو مکمل دیکھنے کے لیے پہلے <b>طلبہ</b> والے ٹیب سے <b>نمونہ ڈیٹا</b> کا بٹن دبائیں — 5 طلبہ نمبروں سمیت بن جائیں گے، پھر فیس، آئی ڈی کارڈ اور رزلٹ پورٹل سب چلیں گے۔</p></div>';
+    sec.innerHTML = '<div class="card-head"><h2 class="card-title" style="font-size:22px">ڈیش بورڈ <span style="color:var(--brand-dark)">' + esc(demo.settings.schoolName) + '</span></h2>' +
+      '<p class="note">نمونہ ڈیٹا کے ساتھ لائیو ڈیمو</p></div>' + hint +
       '<div class="stats">' +
       '<div class="stat"><div class="s-num">' + fmt(students.length) + '</div><div class="s-lbl">کل طلبہ</div></div>' +
       '<div class="stat"><div class="s-num">' + fmt(classes.length) + '</div><div class="s-lbl">جماعتیں</div></div>' +
