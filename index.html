@@ -3724,7 +3724,7 @@ table.marks th { background: #f4f4f4; }
       var out = $('dm-p-out');
       if (!st) { out.innerHTML = '<p class="empty">یہ نمبر نہیں ملا۔ داخلہ نمبر (مثلاً DEMO-1) آزمائیں۔</p>'; return; }
       var exam = exams.filter(function (e) { return e.id === examId; })[0] || {};
-      var r = window.C && window.C.resultFor ? window.C.resultFor(st, examId, db) : null;
+      var r = window.ResultCore && window.ResultCore.resultFor ? window.ResultCore.resultFor(st, examId, db) : null;
       if (!r || !r.complete) {
         out.innerHTML = '<p class="empty">' + esc(st.name) + ' کا اس امتحان کا مکمل نتیجہ ابھی داخل نہیں ہوا۔</p>';
         return;
