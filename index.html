@@ -521,6 +521,9 @@ table.marks th { background: #f4f4f4; }
 .mini-tabs button.on { background: var(--brand-dark); color: #fff; border-color: var(--brand-dark); }
 
 </style>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0b5d3b">
+<script>if ('serviceWorker' in navigator && location.protocol === 'https:') { navigator.serviceWorker.register('sw.js').catch(function () {}); }</script>
 </head>
 <body>
 <header class="top no-print">
@@ -3197,7 +3200,42 @@ table.marks th { background: #f4f4f4; }
       '<label>لاگو (اختیاری)<input id="dm-slogo" type="file" accept="image/*"></label>' +
       '</div><div class="row"><button id="dm-ssave" class="primary">محفوظ کریں</button>' +
       (s.logo ? '<img src="' + s.logo + '" alt="logo" style="height:52px;border-radius:8px">' : '') +
-      '</div></div>';
+      '</div></div>' +
+      '<div class="panel"><h3>بیک اپ اور بحالی</h3>' +
+      '<p class="note">سارا ڈیٹا اسی ڈیوائس پر رہتا ہے۔ بیک اپ فائل ڈاؤن لوڈ کر کے محفوظ رکھیں؛ نئے ورژن یا دوسری ڈیوائس پر وہی فائل کھول کر ڈیٹا واپس لائیں۔</p>' +
+      '<div class="row"><button id="dm-backup" class="primary">بیک اپ ڈاؤن لوڈ کریں</button>' +
+      '<label class="small" style="border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer">بیک اپ سے بحال کریں' +
+      '<input id="dm-restore" type="file" accept="application/json,.json" style="display:none"></label></div>' +
+      '<p class="note" id="dm-backup-msg"></p></div>';
+    $('dm-backup').addEventListener('click', function () {
+      var raw = localStorage.getItem(KEY) || '{}';
+      var blob = new Blob([raw], { type: 'application/json' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'natija-backup-' + today() + '.json';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+      $('dm-backup-msg').textContent = 'بیک اپ ڈاؤن لوڈ ہو گیا۔';
+    });
+    $('dm-restore').addEventListener('change', function () {
+      var f = $('dm-restore').files && $('dm-restore').files[0];
+      if (!f) return;
+      var rd = new FileReader();
+      rd.onload = function () {
+        try {
+          var d = JSON.parse(rd.result);
+          if (!d || typeof d !== 'object' || (!d.students && !d.demo)) throw new Error('bad');
+          if (!window.confirm('موجودہ ڈیٹا کی جگہ بیک اپ والا ڈیٹا آ جائے گا۔ ٹھیک ہے؟')) return;
+          DEMO_CACHE = d.demo || DEMO_CACHE;
+          localStorage.setItem(KEY, JSON.stringify(d));
+          location.reload();
+        } catch (e) {
+          $('dm-backup-msg').textContent = 'یہ بیک اپ فائل درست نہیں ہے۔';
+        }
+      };
+      rd.readAsText(f);
+    });
     $('dm-ssave').addEventListener('click', function () {
       var demo2 = loadDemo();
       demo2.settings.schoolName = $('dm-sname').value.trim() || demo2.settings.schoolName;
