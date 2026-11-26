@@ -3949,7 +3949,7 @@ function hookSaves(){
 }
 
 function boot(){
-  if(typeof BackendConfig==='undefined'||!APP_CONFIG.SUPABASE_URL)return; // sync optional; app works offline
+  if(typeof APP_CONFIG==='undefined'||!APP_CONFIG.SUPABASE_URL)return; // sync optional; app works offline
   buildUI();hookSaves();paint();
   if(sess()&&navigator.onLine){pullNow(false).catch(function(){});}
   S.pullTimer=setInterval(function(){if(sess()&&navigator.onLine&&!S.pushTimer)pullNow(false).catch(function(){});},60000);
