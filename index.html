@@ -3805,17 +3805,30 @@ window.APP_CONFIG = {
 // Natija System - آن لائن سنک (offline-first Supabase sync)
 // Local device storage stays the source of truth. When internet exists and the
 // user has logged in, changes push to Supabase and other devices pull them.
+// Guards: a persisted "dirty" flag protects unsent edits across restarts, a
+// push first checks the remote has not moved ahead (no stale overwrite), and
+// failed uploads keep the dirty flag so they retry until they land.
 (function(){
 'use strict';
 var STORE_KEY='islamicschool-preview-v1';
 var SESSION_KEY='natija-sync-v1';
 var MARK_KEY='natija-sync-mark';
-var S={session:null,schoolId:null,pushTimer:null,pushing:false,lastEdit:0,pullTimer:null};
+var DIRTY_KEY='natija-sync-dirty';
+var BACKUP_KEY='natija-sync-backup';
+var S={session:null,schoolId:null,pushTimer:null,pushing:false,lastEdit:0,lastErr:''};
 
 function sess(){try{return JSON.parse(localStorage.getItem(SESSION_KEY)||'null');}catch(e){return null;}}
 function saveSess(s){if(s)localStorage.setItem(SESSION_KEY,JSON.stringify(s));else localStorage.removeItem(SESSION_KEY);}
 function mark(){return localStorage.getItem(MARK_KEY)||'';}
 function setMark(t){localStorage.setItem(MARK_KEY,t||'');}
+function dirty(){return localStorage.getItem(DIRTY_KEY)==='1';}
+function setDirty(d){if(d)localStorage.setItem(DIRTY_KEY,'1');else localStorage.removeItem(DIRTY_KEY);paint();}
+function backupConflict(){
+  try{
+    var local=localStorage.getItem(STORE_KEY);
+    if(local)localStorage.setItem(BACKUP_KEY,JSON.stringify({at:new Date().toISOString(),doc:JSON.parse(local)}));
+  }catch(e){}
+}
 
 async function authReq(path,body){
   var r=await fetch(APP_CONFIG.SUPABASE_URL+'/auth/v1/'+path,{method:'POST',headers:{'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -3826,7 +3839,8 @@ async function authReq(path,body){
 async function api(path,opt){
   var s=sess();if(!s)throw new Error('لاگ اِن نہیں');
   if(s.expires_at&&Date.now()>s.expires_at-60000){await doRefresh();s=sess();}
-  opt=opt||{};opt.cache='no-store';opt.headers=Object.assign({'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
+  opt=opt||{};opt.cache='no-store';
+  opt.headers=Object.assign({'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
   var r=await fetch(APP_CONFIG.SUPABASE_URL+'/rest/v1/'+path,opt);
   if(r.status===401){await doRefresh();s=sess();opt.headers['Authorization']='Bearer '+s.access_token;r=await fetch(APP_CONFIG.SUPABASE_URL+'/rest/v1/'+path,opt);}
   if(!r.ok){var t=await r.text().catch(function(){return'';});throw new Error('sync '+r.status+': '+t.slice(0,120));}
@@ -3843,23 +3857,26 @@ async function doRefresh(){
 async function login(email,password){
   var j=await authReq('token?grant_type=password',{email:email,password:password});
   saveSess({access_token:j.access_token,refresh_token:j.refresh_token,expires_at:Date.now()+((j.expires_in||3600)*1000),email:j.user&&j.user.email||email});
-  await pullNow(true);
+  // Never pull over unsent edits: push first if this device has any.
+  if(dirty())await pushNow();else await pullNow(true);
   paint();
 }
 function logout(){saveSess(null);S.schoolId=null;paint();}
 
 async function pullNow(force){
+  if(dirty()&&!force)return false; // unsent local edits win over a background pull
   var rows=await api('school_docs?select=school_id,doc,updated_at&limit=1');
   var row=rows&&rows[0];if(!row)return false;
   S.schoolId=row.school_id;
   var remoteEmpty=!row.doc||Object.keys(row.doc).length===0;
-  if(remoteEmpty){schedulePush();return false;} // nothing online yet: upload this device's data instead
+  if(remoteEmpty){if(!dirty()){setDirty(true);pushNow();}return false;} // nothing online yet: upload this device's data instead
   var remoteT=row.updated_at||'';
   if(force||remoteT>mark()){
     var local=localStorage.getItem(STORE_KEY);
     if(!force&&local&&Date.now()-S.lastEdit<10000)return false; // don't clobber an active edit
     localStorage.setItem(STORE_KEY,JSON.stringify(row.doc));
     setMark(remoteT);
+    setDirty(false); // local now matches the remote base
     if(force||local)location.reload();
     return true;
   }
@@ -3867,25 +3884,40 @@ async function pullNow(force){
 }
 async function pushNow(){
   S.pushTimer=null;
-  if(!sess()||!navigator.onLine||S.pushing)return;
+  if(!sess()||!navigator.onLine||S.pushing||!dirty())return;
   S.pushing=true;paint();
   try{
     if(!S.schoolId){var rows=await api('school_docs?select=school_id&limit=1');S.schoolId=rows&&rows[0]&&rows[0].school_id;}
     if(S.schoolId){
+      // Stale-overwrite guard: if another device saved after our base, take
+      // the newer remote instead of uploading our stale doc over it.
+      var cur=await api('school_docs?select=updated_at&limit=1');
+      var remoteT=cur&&cur[0]&&cur[0].updated_at||'';
+      if(remoteT&&remoteT>mark()){
+        backupConflict();
+        S.pushing=false;
+        await pullNow(true); // applies remote and reloads
+        return;
+      }
       var now=new Date().toISOString();
       await api('school_docs?school_id=eq.'+S.schoolId,{method:'PATCH',body:JSON.stringify({doc:JSON.parse(localStorage.getItem(STORE_KEY)||'{}'),updated_at:now})});
       setMark(now);
+      setDirty(false);
     }
-  }catch(e){S.lastErr=String(e&&e.message||e);}
+  }catch(e){S.lastErr=String(e&&e.message||e);} // dirty stays set: retried on next save, interval or reconnect
   S.pushing=false;paint();
 }
-function schedulePush(){S.lastEdit=Date.now();clearTimeout(S.pushTimer);S.pushTimer=setTimeout(pushNow,3000);paint();}
+function schedulePush(){S.lastEdit=Date.now();setDirty(true);clearTimeout(S.pushTimer);S.pushTimer=setTimeout(pushNow,3000);paint();}
 
 // ---- UI ----
 function dot(state){return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+state+';margin-inline-start:6px"></span>';}
 function statusInfo(){
   if(!sess())return{txt:'آف لائن (صرف اس ڈیوائس)',c:'#94a3b8'};
-  if(S.pushing||S.pushTimer)return{txt:'محفوظ ہو رہا ہے…',c:'#d97706'};
+  if(S.pushing)return{txt:'محفوظ ہو رہا ہے…',c:'#d97706'};
+  if(dirty()){
+    if(!navigator.onLine)return{txt:'آف لائن — تبدیلیاں ڈیوائس پر محفوظ ہیں',c:'#d97706'};
+    return{txt:'بھیجنا باقی — دوبارہ کوشش ہو رہی ہے',c:'#d97706'};
+  }
   if(!navigator.onLine)return{txt:'آف لائن - بعد میں سنک ہوگا',c:'#d97706'};
   return{txt:'آن لائن سنک چالو',c:'#16a34a'};
 }
@@ -3902,7 +3934,10 @@ function openDialog(){
   document.getElementById('syncStatusPane').style.display=logged?'':'none';
   if(logged){
     document.getElementById('syncWho').textContent=sess().email||'';
-    document.getElementById('syncHint').textContent='موبائل اور کمپیوٹر پر یہی اکاؤنٹ لاگ اِن کریں - ڈیٹا خودکار مل جائے گا۔';
+    var st=statusInfo();
+    document.getElementById('syncHint').textContent=dirty()
+      ?'کچھ تبدیلیاں ابھی آن لائن نہیں گئیں - انٹرنیٹ ملتے ہی خودکار بھیج دی جائیں گی۔'
+      :'موبائل اور کمپیوٹر پر یہی اکاؤنٹ لاگ اِن کریں - ڈیٹا خودکار مل جائے گا۔';
   }
   document.getElementById('syncErr').textContent='';
   d.showModal();
@@ -3943,18 +3978,24 @@ function buildUI(){
 // Hook saves: whenever the app writes its data, schedule an online push.
 function hookSaves(){
   var orig=localStorage.setItem.bind(localStorage);
-  var chain=window.__natijaSetItem||orig;
-  var wrapped=function(k,v){chain(k,v);if(k===STORE_KEY)schedulePush();};
+  var wrapped=function(k,v){orig(k,v);if(k===STORE_KEY)schedulePush();};
   localStorage.setItem=wrapped;
-  window.__natijaSetItem=wrapped;
 }
 
 function boot(){
   if(typeof APP_CONFIG==='undefined'||!APP_CONFIG.SUPABASE_URL)return; // sync optional; app works offline
   buildUI();hookSaves();paint();
-  if(sess()&&navigator.onLine){pullNow(false).catch(function(){});}
-  S.pullTimer=setInterval(function(){if(sess()&&navigator.onLine&&!S.pushTimer)pullNow(false).catch(function(){});},60000);
-  window.addEventListener('online',function(){paint();if(sess())pushNow();});
+  if(sess()&&navigator.onLine){
+    if(dirty())pushNow(); // unsent edits from before the restart go first
+    else pullNow(false).catch(function(){});
+  }
+  setInterval(function(){
+    if(sess()&&navigator.onLine){
+      if(dirty())pushNow(); // durable retry of failed uploads
+      else pullNow(false).catch(function(){});
+    }
+  },60000);
+  window.addEventListener('online',function(){paint();if(sess()&&dirty())pushNow();});
   window.addEventListener('offline',paint);
 }
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(boot,0);});
