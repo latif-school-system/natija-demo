@@ -3826,7 +3826,7 @@ async function authReq(path,body){
 async function api(path,opt){
   var s=sess();if(!s)throw new Error('لاگ اِن نہیں');
   if(s.expires_at&&Date.now()>s.expires_at-60000){await doRefresh();s=sess();}
-  opt=opt||{};opt.headers=Object.assign({'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
+  opt=opt||{};opt.cache='no-store';opt.headers=Object.assign({'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
   var r=await fetch(APP_CONFIG.SUPABASE_URL+'/rest/v1/'+path,opt);
   if(r.status===401){await doRefresh();s=sess();opt.headers['Authorization']='Bearer '+s.access_token;r=await fetch(APP_CONFIG.SUPABASE_URL+'/rest/v1/'+path,opt);}
   if(!r.ok){var t=await r.text().catch(function(){return'';});throw new Error('sync '+r.status+': '+t.slice(0,120));}
