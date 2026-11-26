@@ -1,5 +1,5 @@
 /* Natija System demo — offline cache for the installed (PWA) version. */
-var CACHE = 'natija-v2';
+var CACHE = 'natija-v3';
 var ASSETS = ['./', 'index.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', function (e) {
@@ -19,6 +19,8 @@ self.addEventListener('activate', function (e) {
 
 self.addEventListener('fetch', function (e) {
   if (e.request.method !== 'GET') return;
+  // Never cache cross-origin calls (Supabase sync API must always be live).
+  if (new URL(e.request.url).origin !== self.location.origin) return;
   // Pages: network-first so updates reach users when online; cache when offline.
   if (e.request.mode === 'navigate') {
     e.respondWith(
