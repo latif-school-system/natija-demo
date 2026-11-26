@@ -3805,9 +3805,10 @@ window.APP_CONFIG = {
 // Natija System - آن لائن سنک (offline-first Supabase sync)
 // Local device storage stays the source of truth. When internet exists and the
 // user has logged in, changes push to Supabase and other devices pull them.
-// Guards: a persisted "dirty" flag protects unsent edits across restarts, a
-// push first checks the remote has not moved ahead (no stale overwrite), and
-// failed uploads keep the dirty flag so they retry until they land.
+// Guards: a persisted "dirty" flag protects unsent edits across restarts, an
+// atomic conditional write rejects pushes based on a stale remote (no lost
+// updates even for truly simultaneous writes), failed uploads retry until they
+// land, and a newer local edit during an upload stays pending.
 (function(){
 'use strict';
 var STORE_KEY='islamicschool-preview-v1';
@@ -3823,6 +3824,7 @@ function mark(){return localStorage.getItem(MARK_KEY)||'';}
 function setMark(t){localStorage.setItem(MARK_KEY,t||'');}
 function dirty(){return localStorage.getItem(DIRTY_KEY)==='1';}
 function setDirty(d){if(d)localStorage.setItem(DIRTY_KEY,'1');else localStorage.removeItem(DIRTY_KEY);paint();}
+function getBackup(){try{return JSON.parse(localStorage.getItem(BACKUP_KEY)||'null');}catch(e){return null;}}
 function backupConflict(){
   try{
     var local=localStorage.getItem(STORE_KEY);
@@ -3882,6 +3884,13 @@ async function pullNow(force){
   }
   return false;
 }
+async function conflict(){
+  // Another device saved first: keep our unsent edits in a local backup and
+  // take the newer remote instead of overwriting it.
+  backupConflict();
+  S.pushing=false;
+  await pullNow(true); // applies remote and reloads
+}
 async function pushNow(){
   S.pushTimer=null;
   if(!sess()||!navigator.onLine||S.pushing||!dirty())return;
@@ -3889,25 +3898,34 @@ async function pushNow(){
   try{
     if(!S.schoolId){var rows=await api('school_docs?select=school_id&limit=1');S.schoolId=rows&&rows[0]&&rows[0].school_id;}
     if(S.schoolId){
-      // Stale-overwrite guard: if another device saved after our base, take
-      // the newer remote instead of uploading our stale doc over it.
+      var base=mark();
       var cur=await api('school_docs?select=updated_at&limit=1');
       var remoteT=cur&&cur[0]&&cur[0].updated_at||'';
-      if(remoteT&&remoteT>mark()){
-        backupConflict();
-        S.pushing=false;
-        await pullNow(true); // applies remote and reloads
-        return;
-      }
+      if(remoteT&&remoteT>base){await conflict();return;}
+      var editAtStart=S.lastEdit;
       var now=new Date().toISOString();
-      await api('school_docs?school_id=eq.'+S.schoolId,{method:'PATCH',body:JSON.stringify({doc:JSON.parse(localStorage.getItem(STORE_KEY)||'{}'),updated_at:now})});
+      // Atomic guard: the write only lands if the remote is still at the base
+      // we checked. A simultaneous writer turns this into a no-match, and the
+      // loser takes the conflict path instead of silently overwriting.
+      var cond=base||remoteT;
+      var q='school_id=eq.'+S.schoolId+(cond?'&updated_at=eq.'+encodeURIComponent(cond):'');
+      var wr=await api('school_docs?'+q,{method:'PATCH',headers:{Prefer:'return=representation'},body:JSON.stringify({doc:JSON.parse(localStorage.getItem(STORE_KEY)||'{}'),updated_at:now})});
+      if(!wr||!wr.length){await conflict();return;} // lost a simultaneous-write race
       setMark(now);
-      setDirty(false);
+      if(S.lastEdit<=editAtStart)setDirty(false);
+      else schedulePush(); // a newer local edit arrived during the upload: keep it pending and send it
     }
   }catch(e){S.lastErr=String(e&&e.message||e);} // dirty stays set: retried on next save, interval or reconnect
   S.pushing=false;paint();
 }
 function schedulePush(){S.lastEdit=Date.now();setDirty(true);clearTimeout(S.pushTimer);S.pushTimer=setTimeout(pushNow,3000);paint();}
+
+function restoreBackup(){
+  var b=getBackup();if(!b||!b.doc)return;
+  localStorage.removeItem(BACKUP_KEY);
+  localStorage.setItem(STORE_KEY,JSON.stringify(b.doc)); // schedules a push through the save hook
+  setTimeout(function(){location.reload();},1500);
+}
 
 // ---- UI ----
 function dot(state){return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+state+';margin-inline-start:6px"></span>';}
@@ -3932,9 +3950,12 @@ function openDialog(){
   var logged=!!sess();
   document.getElementById('syncLoginForm').style.display=logged?'none':'';
   document.getElementById('syncStatusPane').style.display=logged?'':'none';
+  var bk=getBackup();
+  var pane=document.getElementById('syncBackupPane');
+  pane.style.display=bk?'':'none';
+  if(bk)document.getElementById('syncBackupAt').textContent=new Date(bk.at).toLocaleString('ur-PK');
   if(logged){
     document.getElementById('syncWho').textContent=sess().email||'';
-    var st=statusInfo();
     document.getElementById('syncHint').textContent=dirty()
       ?'کچھ تبدیلیاں ابھی آن لائن نہیں گئیں - انٹرنیٹ ملتے ہی خودکار بھیج دی جائیں گی۔'
       :'موبائل اور کمپیوٹر پر یہی اکاؤنٹ لاگ اِن کریں - ڈیٹا خودکار مل جائے گا۔';
@@ -3960,7 +3981,11 @@ function buildUI(){
     +'<div id="syncStatusPane" style="display:none">'
     +'<p class="sync-note">لاگ اِن: <b id="syncWho" dir="ltr"></b></p>'
     +'<p class="sync-note" id="syncHint"></p>'
-    +'<button id="syncDoLogout" class="btn" type="button" style="background:#64748b">لاگ آؤٹ (اس ڈیوائس پر ڈیٹا محفوظ رہے گا)</button>'
+    +'<div id="syncBackupPane" style="display:none;border-top:1px solid #e2e8f0;margin-top:10px;padding-top:10px">'
+    +'<p class="sync-note">دوسری ڈیوائس کی تازہ تبدیلیوں کی وجہ سے اس ڈیوائس کی کچھ تبدیلیاں آن لائن نہیں جا سکیں۔ ان کا بیک اپ محفوظ ہے (<span id="syncBackupAt"></span>)۔</p>'
+    +'<button id="syncDoRestore" class="btn" type="button" style="background:#b45309">وہ تبدیلیاں واپس بحال کریں</button>'
+    +'</div>'
+    +'<button id="syncDoLogout" class="btn" type="button" style="background:#64748b;margin-top:10px">لاگ آؤٹ (اس ڈیوائس پر ڈیٹا محفوظ رہے گا)</button>'
     +'</div>'
     +'<p id="syncErr" class="sync-err"></p>'
     +'<form method="dialog" style="margin-top:10px"><button class="btn" type="submit" style="background:#e2e8f0;color:#1e293b">بند کریں</button></form>';
@@ -3973,6 +3998,7 @@ function buildUI(){
     btn.disabled=false;btn.textContent='لاگ اِن اور سنک شروع کریں';
   });
   document.getElementById('syncDoLogout').addEventListener('click',function(){logout();d.close();});
+  document.getElementById('syncDoRestore').addEventListener('click',function(){restoreBackup();});
 }
 
 // Hook saves: whenever the app writes its data, schedule an online push.
