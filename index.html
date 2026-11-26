@@ -3957,7 +3957,6 @@ function boot(){
   window.addEventListener('online',function(){paint();if(sess())pushNow();});
   window.addEventListener('offline',paint);
 }
-window.__SYNC={state:S,push:pushNow,pull:pullNow};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(boot,0);});
 else setTimeout(boot,0);
 })();
