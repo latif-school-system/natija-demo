@@ -520,6 +520,15 @@ table.marks th { background: #f4f4f4; }
 .mini-tabs button { border: 1px solid var(--line); background: #fff; border-radius: 20px; padding: 6px 16px; font-family: var(--urdu); font-size: 15px; cursor: pointer; min-height: 38px; }
 .mini-tabs button.on { background: var(--brand-dark); color: #fff; border-color: var(--brand-dark); }
 
+/* آن لائن سنک */
+.sync-btn{background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:6px 14px;font:inherit;font-size:.85rem;cursor:pointer;display:flex;align-items:center;gap:2px}
+.sync-btn:hover{background:rgba(255,255,255,.3)}
+.sync-dlg{border:0;border-radius:16px;padding:22px 24px;max-width:420px;width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.sync-dlg::backdrop{background:rgba(15,23,42,.45)}
+.sync-title{margin:0 0 10px;font-size:1.15rem}
+.sync-note{color:#475569;font-size:.92rem;line-height:1.7;margin:8px 0}
+.sync-err{color:#b91c1c;font-size:.9rem;min-height:1.2em;margin:8px 0 0}
+
 </style>
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#0b5d3b">
@@ -3780,6 +3789,175 @@ table.marks th { background: #f4f4f4; }
         '</tbody></table></div></div>';
     });
   });
+})();
+
+</script>
+<script>
+// Supabase connection settings for the natija-system project (filled 2026-11-19).
+// The anon key is public by design; Row Level Security on every table is what protects the data.
+window.APP_CONFIG = {
+  SUPABASE_URL: 'https://virkwvchgoobupxjpllz.supabase.co',
+  SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZpcmt3dmNoZ29vYnVweGpwbGx6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTUwNzM3MTQsImV4cCI6MjExMDY0OTcxNH0.2Hx205sVzoCWOeXkLrVO6Nzs_oXmywZQ9-6lJZ7qmv8'
+};
+
+</script>
+<script>
+// Natija System - آن لائن سنک (offline-first Supabase sync)
+// Local device storage stays the source of truth. When internet exists and the
+// user has logged in, changes push to Supabase and other devices pull them.
+(function(){
+'use strict';
+var STORE_KEY='islamicschool-preview-v1';
+var SESSION_KEY='natija-sync-v1';
+var MARK_KEY='natija-sync-mark';
+var S={session:null,schoolId:null,pushTimer:null,pushing:false,lastEdit:0,pullTimer:null};
+
+function sess(){try{return JSON.parse(localStorage.getItem(SESSION_KEY)||'null');}catch(e){return null;}}
+function saveSess(s){if(s)localStorage.setItem(SESSION_KEY,JSON.stringify(s));else localStorage.removeItem(SESSION_KEY);}
+function mark(){return localStorage.getItem(MARK_KEY)||'';}
+function setMark(t){localStorage.setItem(MARK_KEY,t||'');}
+
+async function authReq(path,body){
+  var r=await fetch(BackendConfig.url+'/auth/v1/'+path,{method:'POST',headers:{'apikey':BackendConfig.anonKey,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  var j=await r.json().catch(function(){return{};});
+  if(!r.ok)throw new Error(j.error_description||j.msg||j.error||'خطأ');
+  return j;
+}
+async function api(path,opt){
+  var s=sess();if(!s)throw new Error('لاگ اِن نہیں');
+  if(s.expires_at&&Date.now()>s.expires_at-60000){await doRefresh();s=sess();}
+  opt=opt||{};opt.headers=Object.assign({'apikey':BackendConfig.anonKey,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
+  var r=await fetch(BackendConfig.url+'/rest/v1/'+path,opt);
+  if(r.status===401){await doRefresh();s=sess();opt.headers['Authorization']='Bearer '+s.access_token;r=await fetch(BackendConfig.url+'/rest/v1/'+path,opt);}
+  if(!r.ok){var t=await r.text().catch(function(){return'';});throw new Error('sync '+r.status+': '+t.slice(0,120));}
+  var ct=r.headers.get('content-type')||'';
+  return ct.indexOf('json')>=0?r.json():null;
+}
+async function doRefresh(){
+  var s=sess();if(!s||!s.refresh_token)throw new Error('سیشن ختم');
+  try{
+    var j=await authReq('token?grant_type=refresh_token',{refresh_token:s.refresh_token});
+    saveSess({access_token:j.access_token,refresh_token:j.refresh_token||s.refresh_token,expires_at:Date.now()+((j.expires_in||3600)*1000),email:j.user&&j.user.email||s.email});
+  }catch(e){saveSess(null);paint();throw new Error('سیشن ختم - دوبارہ لاگ اِن کریں');}
+}
+async function login(email,password){
+  var j=await authReq('token?grant_type=password',{email:email,password:password});
+  saveSess({access_token:j.access_token,refresh_token:j.refresh_token,expires_at:Date.now()+((j.expires_in||3600)*1000),email:j.user&&j.user.email||email});
+  await pullNow(true);
+  paint();
+}
+function logout(){saveSess(null);S.schoolId=null;paint();}
+
+async function pullNow(force){
+  var rows=await api('school_docs?select=school_id,doc,updated_at&limit=1');
+  var row=rows&&rows[0];if(!row)return false;
+  S.schoolId=row.school_id;
+  var remoteEmpty=!row.doc||Object.keys(row.doc).length===0;
+  if(remoteEmpty){schedulePush();return false;} // nothing online yet: upload this device's data instead
+  var remoteT=row.updated_at||'';
+  if(force||remoteT>mark()){
+    var local=localStorage.getItem(STORE_KEY);
+    if(!force&&local&&Date.now()-S.lastEdit<10000)return false; // don't clobber an active edit
+    localStorage.setItem(STORE_KEY,JSON.stringify(row.doc));
+    setMark(remoteT);
+    if(force||local)location.reload();
+    return true;
+  }
+  return false;
+}
+async function pushNow(){
+  if(!sess()||!navigator.onLine||S.pushing)return;
+  S.pushing=true;paint();
+  try{
+    if(!S.schoolId){var rows=await api('school_docs?select=school_id&limit=1');S.schoolId=rows&&rows[0]&&rows[0].school_id;}
+    if(S.schoolId){
+      var now=new Date().toISOString();
+      await api('school_docs?school_id=eq.'+S.schoolId,{method:'PATCH',body:JSON.stringify({doc:JSON.parse(localStorage.getItem(STORE_KEY)||'{}'),updated_at:now})});
+      setMark(now);
+    }
+  }catch(e){/* offline or session issue; next save retries */}
+  S.pushing=false;paint();
+}
+function schedulePush(){S.lastEdit=Date.now();clearTimeout(S.pushTimer);S.pushTimer=setTimeout(pushNow,3000);paint();}
+
+// ---- UI ----
+function dot(state){return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+state+';margin-inline-start:6px"></span>';}
+function statusInfo(){
+  if(!sess())return{txt:'آف لائن (صرف اس ڈیوائس)',c:'#94a3b8'};
+  if(S.pushing||S.pushTimer)return{txt:'محفوظ ہو رہا ہے…',c:'#d97706'};
+  if(!navigator.onLine)return{txt:'آف لائن - بعد میں سنک ہوگا',c:'#d97706'};
+  return{txt:'آن لائن سنک چالو',c:'#16a34a'};
+}
+function paint(){
+  var b=document.getElementById('syncBtn');if(!b)return;
+  var i=statusInfo();
+  b.innerHTML=i.txt+dot(i.c);
+  b.title=sess()?('اکاؤنٹ: '+(sess().email||'')):'آن لائن سنک کے لیے لاگ اِن کریں';
+}
+function openDialog(){
+  var d=document.getElementById('syncDlg');if(!d)return;
+  var logged=!!sess();
+  document.getElementById('syncLoginForm').style.display=logged?'none':'';
+  document.getElementById('syncStatusPane').style.display=logged?'':'none';
+  if(logged){
+    document.getElementById('syncWho').textContent=sess().email||'';
+    document.getElementById('syncHint').textContent='موبائل اور کمپیوٹر پر یہی اکاؤنٹ لاگ اِن کریں - ڈیٹا خودکار مل جائے گا۔';
+  }
+  document.getElementById('syncErr').textContent='';
+  d.showModal();
+}
+function buildUI(){
+  var header=document.querySelector('header');if(!header)return;
+  var b=document.createElement('button');
+  b.id='syncBtn';b.className='sync-btn';b.type='button';
+  b.addEventListener('click',openDialog);
+  header.appendChild(b);
+  var d=document.createElement('dialog');
+  d.id='syncDlg';d.className='sync-dlg';
+  d.innerHTML='<h3 class="sync-title">آن لائن سنک</h3>'
+    +'<div id="syncLoginForm">'
+    +'<p class="sync-note">موبائل اور کمپیوٹر پر ڈیٹا مشترک رکھنے کے لیے اپنا ای میل اور پاس ورڈ لکھیں۔ لاگ اِن کے بعد تبدیلیاں خودکار آن لائن محفوظ ہوتی رہیں گی۔</p>'
+    +'<label class="fld"><span class="fld-label">ای میل</span><input id="syncEmail" type="email" dir="ltr" autocomplete="username"></label>'
+    +'<label class="fld"><span class="fld-label">پاس ورڈ</span><input id="syncPass" type="password" dir="ltr" autocomplete="current-password"></label>'
+    +'<button id="syncDoLogin" class="btn" type="button">لاگ اِن اور سنک شروع کریں</button>'
+    +'</div>'
+    +'<div id="syncStatusPane" style="display:none">'
+    +'<p class="sync-note">لاگ اِن: <b id="syncWho" dir="ltr"></b></p>'
+    +'<p class="sync-note" id="syncHint"></p>'
+    +'<button id="syncDoLogout" class="btn" type="button" style="background:#64748b">لاگ آؤٹ (اس ڈیوائس پر ڈیٹا محفوظ رہے گا)</button>'
+    +'</div>'
+    +'<p id="syncErr" class="sync-err"></p>'
+    +'<form method="dialog" style="margin-top:10px"><button class="btn" type="submit" style="background:#e2e8f0;color:#1e293b">بند کریں</button></form>';
+  document.body.appendChild(d);
+  document.getElementById('syncDoLogin').addEventListener('click',async function(){
+    var err=document.getElementById('syncErr');err.textContent='';
+    var btn=this;btn.disabled=true;btn.textContent='جوڑا جا رہا ہے…';
+    try{await login(document.getElementById('syncEmail').value.trim(),document.getElementById('syncPass').value);d.close();}
+    catch(e){err.textContent='لاگ اِن نہیں ہوا: '+(e.message||'انٹرنیٹ یا معلومات چیک کریں');}
+    btn.disabled=false;btn.textContent='لاگ اِن اور سنک شروع کریں';
+  });
+  document.getElementById('syncDoLogout').addEventListener('click',function(){logout();d.close();});
+}
+
+// Hook saves: whenever the app writes its data, schedule an online push.
+function hookSaves(){
+  var orig=localStorage.setItem.bind(localStorage);
+  var chain=window.__natijaSetItem||orig;
+  var wrapped=function(k,v){chain(k,v);if(k===STORE_KEY)schedulePush();};
+  localStorage.setItem=wrapped;
+  window.__natijaSetItem=wrapped;
+}
+
+function boot(){
+  if(typeof BackendConfig==='undefined'||!BackendConfig.url)return; // sync optional; app works offline
+  buildUI();hookSaves();paint();
+  if(sess()&&navigator.onLine){pullNow(false).catch(function(){});}
+  S.pullTimer=setInterval(function(){if(sess()&&navigator.onLine&&!S.pushTimer)pullNow(false).catch(function(){});},60000);
+  window.addEventListener('online',function(){paint();if(sess())pushNow();});
+  window.addEventListener('offline',paint);
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(boot,0);});
+else setTimeout(boot,0);
 })();
 
 </script>
