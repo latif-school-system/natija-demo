@@ -3818,7 +3818,7 @@ function mark(){return localStorage.getItem(MARK_KEY)||'';}
 function setMark(t){localStorage.setItem(MARK_KEY,t||'');}
 
 async function authReq(path,body){
-  var r=await fetch(BackendConfig.url+'/auth/v1/'+path,{method:'POST',headers:{'apikey':BackendConfig.anonKey,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  var r=await fetch(APP_CONFIG.SUPABASE_URL+'/auth/v1/'+path,{method:'POST',headers:{'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Content-Type':'application/json'},body:JSON.stringify(body)});
   var j=await r.json().catch(function(){return{};});
   if(!r.ok)throw new Error(j.error_description||j.msg||j.error||'خطأ');
   return j;
@@ -3826,9 +3826,9 @@ async function authReq(path,body){
 async function api(path,opt){
   var s=sess();if(!s)throw new Error('لاگ اِن نہیں');
   if(s.expires_at&&Date.now()>s.expires_at-60000){await doRefresh();s=sess();}
-  opt=opt||{};opt.headers=Object.assign({'apikey':BackendConfig.anonKey,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
-  var r=await fetch(BackendConfig.url+'/rest/v1/'+path,opt);
-  if(r.status===401){await doRefresh();s=sess();opt.headers['Authorization']='Bearer '+s.access_token;r=await fetch(BackendConfig.url+'/rest/v1/'+path,opt);}
+  opt=opt||{};opt.headers=Object.assign({'apikey':APP_CONFIG.SUPABASE_ANON_KEY,'Authorization':'Bearer '+s.access_token,'Content-Type':'application/json'},opt.headers||{});
+  var r=await fetch(APP_CONFIG.SUPABASE_URL+'/rest/v1/'+path,opt);
+  if(r.status===401){await doRefresh();s=sess();opt.headers['Authorization']='Bearer '+s.access_token;r=await fetch(APP_CONFIG.SUPABASE_URL+'/rest/v1/'+path,opt);}
   if(!r.ok){var t=await r.text().catch(function(){return'';});throw new Error('sync '+r.status+': '+t.slice(0,120));}
   var ct=r.headers.get('content-type')||'';
   return ct.indexOf('json')>=0?r.json():null;
@@ -3949,7 +3949,7 @@ function hookSaves(){
 }
 
 function boot(){
-  if(typeof BackendConfig==='undefined'||!BackendConfig.url)return; // sync optional; app works offline
+  if(typeof BackendConfig==='undefined'||!APP_CONFIG.SUPABASE_URL)return; // sync optional; app works offline
   buildUI();hookSaves();paint();
   if(sess()&&navigator.onLine){pullNow(false).catch(function(){});}
   S.pullTimer=setInterval(function(){if(sess()&&navigator.onLine&&!S.pushTimer)pullNow(false).catch(function(){});},60000);
