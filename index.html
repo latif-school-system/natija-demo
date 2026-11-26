@@ -3866,6 +3866,7 @@ async function pullNow(force){
   return false;
 }
 async function pushNow(){
+  S.pushTimer=null;
   if(!sess()||!navigator.onLine||S.pushing)return;
   S.pushing=true;paint();
   try{
@@ -3875,7 +3876,7 @@ async function pushNow(){
       await api('school_docs?school_id=eq.'+S.schoolId,{method:'PATCH',body:JSON.stringify({doc:JSON.parse(localStorage.getItem(STORE_KEY)||'{}'),updated_at:now})});
       setMark(now);
     }
-  }catch(e){/* offline or session issue; next save retries */}
+  }catch(e){S.lastErr=String(e&&e.message||e);}
   S.pushing=false;paint();
 }
 function schedulePush(){S.lastEdit=Date.now();clearTimeout(S.pushTimer);S.pushTimer=setTimeout(pushNow,3000);paint();}
@@ -3956,6 +3957,7 @@ function boot(){
   window.addEventListener('online',function(){paint();if(sess())pushNow();});
   window.addEventListener('offline',paint);
 }
+window.__SYNC={state:S,push:pushNow,pull:pullNow};
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){setTimeout(boot,0);});
 else setTimeout(boot,0);
 })();
